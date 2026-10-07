@@ -19,6 +19,8 @@
 #include <BLEServer.h>
 #include <BLEUtils.h>
 #include <Preferences.h>
+#include <time.h>
+#include <sys/time.h>
 
 /* ---------- 可选: M5PM1 电量读取 (未安装该库也能编译) ---------- */
 #if __has_include(<M5PM1.h>)
@@ -67,7 +69,14 @@ static uint32_t lastMs    = 0;   // 停止后冻结的时长
 static float    th        = TH_DEFAULT;
 static bool     armed     = true;
 static uint32_t lastTrig  = 0;
-static uint32_t epochBase = 0;   // 时间同步基准 (网页下发)
+static uint32_t epochBase  = 0;     // 离线外推基准 (上一次已知 UTC 秒)
+static uint32_t startEpoch = 0;     // 本场开始时刻的 UTC 秒 (存档时间戳来源)
+static bool     clockSet  = false;  // settimeofday() 是否已成功
+static int32_t  tzOffsetS = 8 * 3600; // 时区偏移(秒), 默认 +8 东八区
+static bool     tzFromNvs = false;  // 是否来自 NVS 持久化值
+static bool     tzFromHost= false;  // 本次上电是否已被网页校正
+static char     hourCache[16] = "--:--";  // 屏幕小时级缓存
+static int      hourCacheH = -999;
 static bool     imuOK     = false;
 static uint8_t  batPct    = 255; // 255 = 未知
 static bool     bleConn   = false;
@@ -97,7 +106,41 @@ struct Rec { uint32_t cnt; uint32_t ms; uint32_t ts; };
 
 static String recKey(uint16_t idx) { return String("r") + String(idx % HIST_MAX); }
 
-static uint32_t nowTs() { return epochBase ? epochBase + millis() / 1000 : 0; }
+/* ---------- 时间基准 ----------
+   两条路径:
+   A. 网页实时连接 -> 下发 Unix 时间戳, 设备 settimeofday() 建 RTC, 时间随漂移自校正
+   B. 纯离线运行  -> 用 NVS 里持久化的上次时间 + 本次开机后经过的秒数 外推
+   两者都返回 UTC 秒, 再用 tzOffsetS 换算成 +8 本地时间显示。 */
+static uint32_t nowEpoch() {
+  time_t t = time(nullptr);
+  if (t > 1600000000L) return (uint32_t)t;    // 系统时钟已建立
+  return epochBase ? epochBase + millis() / 1000 : 0;  // 离线外推
+}
+
+static uint32_t nowTs() { return nowEpoch(); }
+
+/* 把 Unix 秒 + 时区偏移换算成日历字段 (UTC 版, 不依赖 TZ 环境变量) */
+static void tsToLocal(uint32_t epoch, int32_t off, int& Y, int& M, int& D,
+                      int& h, int& m, int& s, int& wd) {
+  time_t   t = (time_t)epoch + off;
+  struct tm g;
+  gmtime_r(&t, &g);
+  Y = g.tm_year + 1900; M = g.tm_mon + 1; D = g.tm_mday;
+  h = g.tm_hour; m = g.tm_min; s = g.tm_sec; wd = g.tm_wday;
+}
+
+/* 屏幕用: 小时级缓存, 避免每帧 gmtime_r */
+static const char* hourStr() {
+  uint32_t e = nowEpoch();
+  if (!e) { return "--:--"; }
+  int Y, M, D, h, m, s, wd;
+  tsToLocal(e, tzOffsetS, Y, M, D, h, m, s, wd);
+  if (h != hourCacheH) {
+    hourCacheH = h;
+    snprintf(hourCache, sizeof(hourCache), "%02d:%02d", h, 0);
+  }
+  return hourCache;
+}
 
 static uint32_t lastNtfLog = 0;
 
@@ -135,10 +178,15 @@ static void sendStatus() {
   else if (st == S_STOP) { c = lastCnt; ms = lastMs; }
   else                   { c = 0;       ms = 0; }
   float f = (st != S_IDLE && ms > 0) ? c * 60000.0f / ms : 0.0f;
-  char b[96];
+  char b[128];
+  /* ts/tsz: 设备端当前时间与显示用偏移, 供网页校时比对;
+     sts: 本场开始时刻(仅运行/停止态有意义) */
   snprintf(b, sizeof(b),
-           "{\"ev\":\"st\",\"st\":%u,\"cnt\":%lu,\"ms\":%lu,\"f\":%.1f,\"th\":%.2f}",
-           (unsigned)st, (unsigned long)c, (unsigned long)ms, f, th);
+           "{\"ev\":\"st\",\"st\":%u,\"cnt\":%lu,\"ms\":%lu,\"f\":%.1f,\"th\":%.2f,"
+           "\"ts\":%lu,\"tsz\":%d,\"sts\":%lu}",
+           (unsigned)st, (unsigned long)c, (unsigned long)ms, f, th,
+           (unsigned long)nowEpoch(), (int)(tzOffsetS / 60),
+           (unsigned long)startEpoch);
   notifyJson(b);
 }
 
@@ -160,6 +208,7 @@ static void sendAck(const char* cmd) {
 /* ================= 动作 ================= */
 static void startSession() {
   cnt = 0; t0 = millis(); armed = true; lastTrig = 0;
+  startEpoch = nowEpoch();                 // 拍摄本场开始时刻(存档用)
   st = S_RUN;
   sendStatus();
 }
@@ -177,12 +226,17 @@ static void doArchive() {
     Rec r;
     r.cnt = lastCnt;
     r.ms  = lastMs;
-    r.ts  = nowTs();
+    /* 关键: 记录"本场开始时刻"。startEpoch 在 startSession() 时拍摄,
+       此时 lastMs 是纯时长, 不要用 nowEpoch()-lastMs 反推, 否则会被
+       中途的时钟校正污染。 */
+    r.ts  = startEpoch ? startEpoch : nowEpoch();
     prefs.putBytes(recKey(histN).c_str(), &r, sizeof(r));
     histN++;
     prefs.putUShort("n", histN);
     sendArc(histN, r);                     // 下发带编号的存档事件
   }
+  /* 存档后把时间基准落盘, 保证下次纯离线开机也能给出正确时间戳 */
+  persistTimebase();
   cnt = 0; lastCnt = 0; lastMs = 0;
   st = S_IDLE;
   sendStatus();
@@ -227,8 +281,33 @@ static void handleCmd(const String& s) {
   else if (s.indexOf("\"archive\"") >= 0) { doArchive(); }
   else if (s.indexOf("\"dump\"")    >= 0) { dumpHistory(); }
   else if (s.indexOf("\"tsync\"")   >= 0) {
+    /* v = UTC Unix 秒 (网页用 Date.now()/1000, 与时区无关)。
+       直接建立系统时钟, 后续由硬件 RTC 自走时, 比 millis() 外推准得多;
+       同时写一份 epochBase 作为掉电后的离线外推种子。 */
     long v = jsonInt(s, "\"v\"");
-    if (v > 1000000000L) epochBase = (uint32_t)v - millis() / 1000;
+    if (v > 1600000000L) {
+      struct timeval tv = { .tv_sec = (time_t)v, .tv_usec = 0 };
+      clockSet = settimeofday(&tv, nullptr) == 0;
+      epochBase = (uint32_t)v - millis() / 1000;
+      persistTimebase();
+      hourCacheH = -999;                   // 强制屏幕刷新时间
+      Serial.printf("[TIME] tsync -> %ld (settimeofday %s)\n",
+                    v, clockSet ? "OK" : "FAIL");
+      sendAck("tsync");
+    }
+  }
+  else if (s.indexOf("\"tzsync\"")  >= 0) {
+    /* v = 相对 UTC 的偏移分钟数: 北京 480, 东京 540, UTC 0, 纽约 -300。
+       只影响显示与日历分解, 不改变 Unix 时间戳本身。 */
+    long v = jsonInt(s, "\"v\"");
+    if (v >= -720 && v <= 840) {
+      tzOffsetS = (int32_t)v * 60;
+      prefs.putInt("tzmin", (int32_t)v);
+      tzFromHost = true;
+      hourCacheH = -999;
+      Serial.printf("[TIME] tzsync -> %ld 分钟\n", v);
+      sendAck("tzsync");
+    }
   }
   else if (s.indexOf("\"th\"")      >= 0) {
     float v = jsonFloat(s, "\"v\"");
@@ -280,14 +359,40 @@ static void drawHeaderFooter(const char* l, uint32_t lc, const char* r) {
   cvs.setTextColor(C_DIM, C_HDRBG);
   cvs.setTextDatum(textdatum_t::middle_right);
   cvs.drawString(r, 232, 11);
+
+  /* 底部条: 时间始终居中显示, 与 A/B 提示共存
+     (时间已同步显示 +8 时:分, 未同步显示 --:--) */
+  const char* hs = hourStr();
+  cvs.setTextFont(1);
+  cvs.setTextColor(C_ACCENT, C_HDRBG);
+  cvs.setTextDatum(textdatum_t::middle_center);
+  cvs.drawString(hs, 120, 124);
 }
 
+/* ---------- 时间基准 NVS 持久化 ---------- */
+static void persistTimebase() {
+  uint32_t e = nowEpoch();
+  if (!e) return;
+  prefs.putUInt("tbase", e);
+  prefs.putUInt("tupd", millis() / 1000);
+}
+
+/* 取用 NVS 里的时间基准: 上次已知时刻 + 本次已开机秒数 外推 */
+static void loadTimebase() {
+  uint32_t b = prefs.getUInt("tbase", 0);
+  if (b > 1600000000UL) {
+    epochBase = b + prefs.getUInt("tupd", 0);
+    Serial.printf("[TIME] 离线基准 %lu (来自 NVS)\n", (unsigned long)epochBase);
+  }
+}
+
+/* 底部提示靠左, 给中间的时间留位 */
 static void drawHints(const char* a, const char* b) {
   cvs.setTextFont(1);
   cvs.setTextColor(C_DIM, C_HDRBG);
-  cvs.setTextDatum(textdatum_t::middle_center);
-  String s = String(a) + "   |   " + b;
-  cvs.drawString(s, 120, 124);
+  cvs.setTextDatum(textdatum_t::middle_left);
+  String s = String(a) + "  " + b;
+  cvs.drawString(s, 6, 124);
 }
 
 static void drawIdle() {
@@ -397,6 +502,13 @@ void setup() {
   prefs.begin("recip", false);
   th    = prefs.getFloat("th", TH_DEFAULT);
   histN = prefs.getUShort("n", 0);
+
+  /* 时区: 默认 +8 (东八区)。网页可用 {"cmd":"tzsync","v":480} 校正。 */
+  tzOffsetS = (int32_t)prefs.getInt("tzmin", 8 * 60) * 60;
+  tzFromNvs = (prefs.getInt("tzmin", -9999) != -9999);
+  Serial.printf("[TIME] 时区偏移 %+d 分钟 (来源: %s), 默认东八区\n",
+                (int)(tzOffsetS / 60), tzFromNvs ? "NVS" : "默认");
+  loadTimebase();
 
   /* IMU 自检 + 诊断信息 */
   float ax, ay, az;
@@ -540,14 +652,29 @@ void loop() {
     lastBat = now;
     updateBattery(true);
   }
+  /* 时间基准落盘 (每 5 分钟一次, 覆盖极小的 NVS 写)
+     用途: 掉电重启后仍能外推出大致正确的时间戳 */
+  static uint32_t lastTsave = 0;
+  if (now - lastTsave >= 300000UL) {
+    lastTsave = now;
+    persistTimebase();
+  }
+
   /* USB 心跳日志 (仅在串口终端连上时输出, 便于排查) */
   if (Serial && now - lastHb >= 3000) {
     lastHb = now;
+    uint32_t e = nowEpoch();
+    int Y, M, D, h, mi, se, wd;
+    char tsb[24] = "--";
+    if (e) { tsToLocal(e, tzOffsetS, Y, M, D, h, mi, se, wd);
+             snprintf(tsb, sizeof(tsb), "%04d-%02d-%02d %02d:%02d:%02d", Y, M, D, h, mi, se); }
     Serial.printf("[HB] st=%d cnt=%lu ms=%lu ble=%d imu=%d heap=%u th=%.2f board=%d bmi=0x%02X svc=0x%04X bat=0x%04X\n",
                   (int)st, (unsigned long)cnt,
                   (unsigned long)(st == S_RUN ? millis() - t0 : lastMs),
                   (int)bleConn, (int)imuOK, ESP.getFreeHeap(), th, dbgBoard, dbgBmi,
                   dbgSvcH, dbgBatH);
+    Serial.printf("[HB] clock=%s tz=%+dmin rtc=%d ts=%s\n",
+                  clockSet ? "SET" : "NO", (int)(tzOffsetS / 60), (int)clockSet, tsb);
   }
 
   delay(2);                                  // ~300-500Hz 采样

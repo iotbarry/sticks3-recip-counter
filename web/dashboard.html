@@ -46,6 +46,8 @@
     display:flex;align-items:center;gap:8px;padding:7px 14px;border-radius:999px;
     border:1px solid var(--line);background:rgba(13,26,46,.7);font-size:13px;color:var(--txt);
   }
+  .pill .tz{font-size:10px;color:var(--dim);margin-left:3px;letter-spacing:.5px}
+  #devClock{font-variant-numeric:tabular-nums;font-weight:600}
   .dot{width:9px;height:9px;border-radius:50%;background:#5b6b80}
   .dot.on{background:var(--green);box-shadow:0 0 8px var(--green);animation:pulse 1.6s infinite}
   .dot.mid{background:var(--amber);box-shadow:0 0 8px var(--amber);animation:pulse 1s infinite}
@@ -153,6 +155,8 @@
     </div>
     <div class="hdr-right">
       <div class="pill"><span class="dot" id="connDot"></span><span id="connText">未连接</span></div>
+      <div class="pill" title="设备端时间">🕒 <span id="devClock">--:--:--</span>
+        <span class="tz" id="tzText"></span></div>
       <div class="pill">⚡ <span id="batText">--</span></div>
       <button id="btnConn">连接设备</button>
       <button id="btnDemo" class="ghost">停止演示</button>
@@ -230,6 +234,7 @@ const CH_CMD    = '7a5f1002-3c17-4a5e-b6a1-2d9c8e4f6a01';
 const $ = id => document.getElementById(id);
 const els = {
   connDot:$('connDot'), connText:$('connText'), batText:$('batText'),
+  devClock:$('devClock'), tzText:$('tzText'),
   btnConn:$('btnConn'), btnDemo:$('btnDemo'), btnToggle:$('btnToggle'),
   btnArchive:$('btnArchive'), btnDump:$('btnDump'), btnCsv:$('btnCsv'),
   thSlider:$('thSlider'), thVal:$('thVal'),
@@ -246,6 +251,9 @@ const S = {
   series:[],        // 本场曲线 [{t(s),c,f}]
   rateHist:[],      // 频率迷你图
   sessions:[],      // 存档 [{i,cnt,ms,ts}]
+  devTs:0, devTz:null,  // 设备端 UTC 秒 / 显示偏移(分钟), 用于校时提示
+  startTs:0,        // 本场开始时刻(设备端拍摄)
+  tzSkew:null,      // 设备时间与本机的偏差(秒), null=无法比较
 };
 let device=null, chStatus=null, chCmd=null, chBat=null;
 let rxBuf='', demoOn=false, demoTimer=null;
@@ -266,6 +274,19 @@ function fmtTs(ts){
   if(!ts) return '--';
   return new Date(ts*1000).toLocaleString('zh-CN',{hour12:false});
 }
+/* 时区标签, 例如 "UTC+8"。存档时间戳是 UTC 秒, 展示时按浏览器本地时区渲染。 */
+function tzLabel(){
+  const off = -new Date().getTimezoneOffset();
+  const sign = off >= 0 ? '+' : '-';
+  const a = Math.abs(off), h = Math.floor(a/60), m = a%60;
+  return `UTC${sign}${h}${m?':'+String(m).padStart(2,'0'):''}`;
+}
+function fmtTsFull(ts){
+  if(!ts) return '--';
+  const d = new Date(ts*1000);
+  const p = n => String(n).padStart(2,'0');
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
 
 /* ==================================================================
  * Web Bluetooth
@@ -275,6 +296,18 @@ function setConn(mode, text){
   els.connText.textContent=text;
 }
 function connected(){ return chStatus && device && device.gatt && device.gatt.connected; }
+
+/* 设备端实时时钟: 以最后一次收到的设备时间戳为基准, 用本地时钟推进,
+   显示的就是"设备以为的时间"——与浏览器时间有偏差时一眼可见。 */
+let devClockBase=0, devClockAt=0;
+function tickDevClock(){
+  if(!devClockBase){ els.devClock.textContent='--:--:--'; return; }
+  const drift = Math.floor((Date.now()-devClockAt)/1000);
+  const d = new Date((devClockBase+drift)*1000);
+  const p = n => String(n).padStart(2,'0');
+  els.devClock.textContent = `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+setInterval(tickDevClock, 1000);
 
 async function connect(){
   if(!navigator.bluetooth){ toast('当前浏览器不支持 Web Bluetooth，请使用 Chrome / Edge（桌面或安卓）', 4200); return; }
@@ -305,7 +338,13 @@ async function connect(){
     setConn('on','已连接 StickS3');
     els.btnConn.textContent='断开连接';
     toast('设备已连接，正在同步时间与历史存档…');
-    await sendCmd({cmd:'tsync', v:Math.floor(Date.now()/1000)});
+    /* 时间同步: tsync 下发 UTC 秒建立设备 RTC (与时区无关);
+       tzsync 下发本机时区偏移(分钟) + 8=北京/东八区, 让设备屏幕显示本地时间。
+       两者都带上, 设备离线重开机后也能沿用正确的时区。 */
+    const tzMin = -new Date().getTimezoneOffset();
+    await sendCmd({cmd:'tsync',  v:Math.floor(Date.now()/1000)});
+    await sendCmd({cmd:'tzsync', v:tzMin});
+    await sendCmd({cmd:'th',     v:S.th});
     await sendCmd({cmd:'dump'});
   }catch(err){
     console.warn(err);
@@ -363,6 +402,13 @@ function dispatch(m){
     case 'st': {
       const prev = S.st;
       S.st = m.st; S.cnt = m.cnt; S.ms = m.ms; S.rate = m.f; S.th = m.th;
+      /* 设备端时间: 用来算校时偏差并显示实时时钟 */
+      if(m.ts){
+        S.devTs = m.ts; S.tzSkew = m.ts - Math.floor(Date.now()/1000);
+        devClockBase = m.ts; devClockAt = Date.now();
+      }
+      if(typeof m.tsz==='number') S.devTz = m.tsz;
+      if(m.sts) S.startTs = m.sts;
       if(m.st===1 && prev!==1){ S.series=[]; S.rateHist=[]; }   // 新场次
       if(m.st!==0){
         S.series.push({t:m.ms/1000, c:m.cnt, f:m.f});
@@ -375,7 +421,11 @@ function dispatch(m){
     case 'arc': upsertArc(m); break;
     case 'dumpend': toast(`历史读取完成，共 ${m.n} 条存档`); break;
     case 'cfg': S.th=m.th; els.thSlider.value=m.th; els.thVal.textContent=m.th.toFixed(2)+' g'; break;
-    case 'ok': if(m.cmd==='ping') toast('设备在线'); break;
+    case 'ok':
+      if(m.cmd==='ping') toast('设备在线');
+      else if(m.cmd==='tsync')  toast(`设备时间已同步（${tzLabel()}）`);
+      else if(m.cmd==='tzsync') toast(`设备时区已设为 ${tzLabel()}`);
+      break;
   }
   updateAll();
 }
@@ -448,6 +498,15 @@ function updateAll(){
   els.kTotal.textContent=S.sessions.reduce((a,b)=>a+b.cnt,0);
   els.lineTag.textContent = S.st===1 ? '-- 实时 --' : (S.series.length? '本场已结束':'-- 等待数据 --');
   els.barTag.textContent = S.sessions.length ? `共 ${S.sessions.length} 场 · 最近 16 场` : '暂无存档';
+
+  /* 时区标签 + 校时偏差提示 */
+  els.tzText.textContent = tzLabel();
+  if(S.tzSkew!==null && connected()){
+    const k = Math.abs(S.tzSkew);
+    els.devClock.title = k<=2 ? `设备时间与本机一致（偏差 ${S.tzSkew}s）`
+                              : `设备时间偏差 ${S.tzSkew}s，点「连接设备」可重新校时`;
+    els.devClock.style.color = k<=2 ? 'var(--green)' : 'var(--amber)';
+  }
 
   /* 控制按钮 */
   const live = connected() || demoOn;
@@ -665,9 +724,9 @@ els.thSlider.addEventListener('change', async ()=>{
 
 els.btnCsv.addEventListener('click', ()=>{
   if(!S.sessions.length){ toast('暂无存档数据可导出'); return; }
-  const rows=[['场次','存档时间','往复次数','时长(秒)','平均频率(次/分)']];
+  const rows=[['场次','存档时间',`时间戳(UTC秒)`,'往复次数','时长(秒)','平均频率(次/分)']];
   S.sessions.forEach(r=>rows.push([
-    r.i, r.ts?new Date(r.ts*1000).toLocaleString('zh-CN',{hour12:false}):'--',
+    r.i, r.ts?fmtTsFull(r.ts):'--', r.ts||'',
     r.cnt, (r.ms/1000).toFixed(1), r.ms>0?(r.cnt*60000/r.ms).toFixed(2):'--'
   ]));
   const csv='\ufeff'+rows.map(r=>r.join(',')).join('\n');

@@ -100,6 +100,7 @@ async def probe():
 
         await send('{"cmd":"ping"}')
         await send('{"cmd":"tsync","v":%d}' % int(_t.time()))
+        await send('{"cmd":"tzsync","v":480}')   # +8 东八区
         await send('{"cmd":"th","v":0.4}')
         await send('{"cmd":"start"}', 5)      # 跑 5 秒
         await send('{"cmd":"stop"}', 1.0)
