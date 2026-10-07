@@ -1,0 +1,687 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>往复作战数据可视化 · StickS3</title>
+<style>
+  :root{
+    --bg:#04070f; --panel:#0a1322; --panel2:#0d1a2e; --line:#16324f;
+    --cyan:#22d3ee; --blue:#3b82f6; --violet:#a78bfa; --red:#f87171;
+    --green:#34d399; --amber:#fbbf24; --txt:#e6f1ff; --dim:#7d93ad;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    background:
+      radial-gradient(1100px 520px at 75% -10%, rgba(14,42,84,.55), transparent 60%),
+      radial-gradient(900px 500px at -5% 105%, rgba(19,49,94,.5), transparent 60%),
+      var(--bg);
+    color:var(--txt);
+    font-family:"Segoe UI","Microsoft YaHei",system-ui,sans-serif;
+    overflow-x:hidden;
+  }
+  body::before{ /* 科技网格 */
+    content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+    background:
+      linear-gradient(rgba(34,211,238,.035) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(34,211,238,.035) 1px, transparent 1px);
+    background-size:42px 42px;
+    mask-image:linear-gradient(#000 55%, transparent);
+  }
+  .wrap{position:relative;z-index:1;max-width:1560px;margin:0 auto;padding:18px 26px 30px}
+
+  /* ============ 顶部 ============ */
+  header{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;padding:6px 2px 16px}
+  .brand{display:flex;align-items:center;gap:14px}
+  .logo{width:46px;height:46px;flex:0 0 auto;filter:drop-shadow(0 0 10px rgba(34,211,238,.45))}
+  h1{
+    font-size:30px;font-weight:800;letter-spacing:2px;line-height:1.15;
+    background:linear-gradient(92deg,#e6f1ff 10%,#22d3ee 55%,#3b82f6 95%);
+    -webkit-background-clip:text;background-clip:text;color:transparent;
+  }
+  .sub{font-size:12px;color:var(--dim);letter-spacing:3px;margin-top:3px}
+  .hdr-right{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .pill{
+    display:flex;align-items:center;gap:8px;padding:7px 14px;border-radius:999px;
+    border:1px solid var(--line);background:rgba(13,26,46,.7);font-size:13px;color:var(--txt);
+  }
+  .dot{width:9px;height:9px;border-radius:50%;background:#5b6b80}
+  .dot.on{background:var(--green);box-shadow:0 0 8px var(--green);animation:pulse 1.6s infinite}
+  .dot.mid{background:var(--amber);box-shadow:0 0 8px var(--amber);animation:pulse 1s infinite}
+  .dot.demo{background:var(--violet);box-shadow:0 0 8px var(--violet)}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.45}}
+
+  button{
+    cursor:pointer;border:none;border-radius:9px;padding:10px 18px;font-size:14px;font-weight:600;
+    color:#04121f;background:linear-gradient(135deg,var(--cyan),var(--blue));
+    transition:filter .15s, transform .05s;letter-spacing:1px;
+  }
+  button:hover{filter:brightness(1.12)}
+  button:active{transform:scale(.97)}
+  button:disabled{filter:grayscale(.8) brightness(.7);cursor:not-allowed}
+  button.ghost{background:transparent;color:var(--cyan);border:1px solid #1d4f66}
+  button.warn{background:linear-gradient(135deg,#f59e0b,#ef4444);color:#1a0a02}
+  button.sm{padding:7px 13px;font-size:13px}
+
+  /* ============ KPI ============ */
+  .kpis{display:grid;grid-template-columns:repeat(6,1fr);gap:14px;margin-bottom:14px}
+  .kpi{
+    position:relative;overflow:hidden;border-radius:14px;padding:14px 16px 12px;
+    background:linear-gradient(165deg,var(--panel2),var(--panel));
+    border:1px solid var(--line);
+  }
+  .kpi::before{content:"";position:absolute;top:0;left:0;width:100%;height:2px;
+    background:linear-gradient(90deg,transparent,var(--cyan),transparent);opacity:.5}
+  .kpi label{display:block;font-size:12px;color:var(--dim);letter-spacing:2px;margin-bottom:6px}
+  .kpi .v{font-size:28px;font-weight:800;font-variant-numeric:tabular-nums;letter-spacing:1px}
+  .kpi .s{font-size:11px;color:var(--dim);margin-left:4px}
+  .kpi .huge{font-size:46px;color:var(--cyan);text-shadow:0 0 26px rgba(34,211,238,.35);line-height:1}
+  .kpi .sub2{display:block;font-size:11px;color:var(--dim);margin-top:4px}
+  .st-idle{color:#93a5bb}.st-run{color:var(--red);text-shadow:0 0 16px rgba(248,113,113,.4)}
+  .st-stop{color:var(--green);text-shadow:0 0 16px rgba(52,211,153,.35)}
+  #rateSpark{width:100%;height:34px;display:block;margin-top:8px}
+
+  /* ============ 控制条 ============ */
+  .controls{
+    display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+    padding:12px 16px;border:1px solid var(--line);border-radius:14px;
+    background:rgba(10,19,34,.75);margin-bottom:14px;
+  }
+  .controls .sep{flex:1}
+  .th-wrap{display:flex;align-items:center;gap:10px;font-size:13px;color:var(--dim)}
+  .th-wrap b{color:var(--amber);font-variant-numeric:tabular-nums;min-width:52px}
+  input[type=range]{width:150px;accent-color:var(--cyan)}
+
+  /* ============ 图表 ============ */
+  .charts{display:grid;grid-template-columns:7fr 5fr;gap:14px;margin-bottom:14px}
+  .card{
+    border:1px solid var(--line);border-radius:14px;padding:14px 16px;
+    background:linear-gradient(170deg,rgba(13,26,46,.85),rgba(10,19,34,.9));
+  }
+  .card h2{font-size:13px;color:var(--dim);letter-spacing:3px;margin-bottom:8px;display:flex;align-items:center;gap:8px}
+  .card h2::before{content:"";width:3px;height:13px;background:var(--cyan);border-radius:2px;box-shadow:0 0 6px var(--cyan)}
+  .card h2 .tag{margin-left:auto;font-size:11px;letter-spacing:0;color:#3f5877}
+  canvas.chart{width:100%;height:330px;display:block}
+
+  /* ============ 表格 ============ */
+  .tbl-scroll{max-height:300px;overflow:auto;border-radius:10px;border:1px solid #122640}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  thead th{
+    position:sticky;top:0;background:#0d1e33;color:var(--dim);font-weight:600;letter-spacing:1px;
+    padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);z-index:2;
+  }
+  tbody td{padding:8px 12px;border-bottom:1px solid #10233c;font-variant-numeric:tabular-nums}
+  tbody tr:hover{background:rgba(34,211,238,.06)}
+  .num{color:var(--cyan);font-weight:700}
+  .empty-row td{text-align:center;color:#3f5877;padding:22px}
+
+  footer{margin-top:16px;font-size:12px;color:#4a6076;line-height:1.9;text-align:center}
+  footer b{color:var(--dim)}
+
+  /* ============ Toast ============ */
+  #toast{
+    position:fixed;right:22px;bottom:22px;z-index:9;padding:11px 18px;border-radius:10px;
+    background:rgba(13,30,52,.95);border:1px solid #1d4f66;color:var(--cyan);font-size:13px;
+    opacity:0;transform:translateY(8px);transition:all .25s;pointer-events:none;max-width:420px;
+  }
+  #toast.show{opacity:1;transform:none}
+
+  @media (max-width:1100px){
+    .kpis{grid-template-columns:repeat(3,1fr)}
+    .charts{grid-template-columns:1fr}
+    h1{font-size:24px}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- ================= 顶栏 ================= -->
+  <header>
+    <div class="brand">
+      <svg class="logo" viewBox="0 0 48 48" fill="none">
+        <rect x="4" y="12" width="40" height="24" rx="5" stroke="#22d3ee" stroke-width="2.4"/>
+        <path d="M12 24h4m4 0h4m4 0h4" stroke="#22d3ee" stroke-width="2.4" stroke-linecap="round"/>
+        <circle cx="36" cy="24" r="3" fill="#22d3ee"/>
+        <path d="M10 8c3-4 7-4 10 0M28 8c3-4 7-4 10 0" stroke="#3b82f6" stroke-width="2.2" stroke-linecap="round"/>
+      </svg>
+      <div>
+        <h1>往复作战数据可视化</h1>
+        <div class="sub">M5STACK STICKS3 · 往复电机次数统计终端 · BLE 实时链路</div>
+      </div>
+    </div>
+    <div class="hdr-right">
+      <div class="pill"><span class="dot" id="connDot"></span><span id="connText">未连接</span></div>
+      <div class="pill">⚡ <span id="batText">--</span></div>
+      <button id="btnConn">连接设备</button>
+      <button id="btnDemo" class="ghost">停止演示</button>
+    </div>
+  </header>
+
+  <!-- ================= KPI ================= -->
+  <section class="kpis">
+    <div class="kpi"><label>运行状态</label><div class="v st-idle" id="kState">待机</div><span class="sub2" id="kStateSub">等待开始</span></div>
+    <div class="kpi"><label>本次往复次数</label><span class="v huge" id="kCnt">0</span><span class="s">次</span></div>
+    <div class="kpi"><label>本次时长</label><div class="v" id="kDur">00:00</div><span class="s">mm:ss</span></div>
+    <div class="kpi"><label>实时频率</label><div class="v" id="kRate">0.0</div><span class="s">次/分钟</span><canvas id="rateSpark"></canvas></div>
+    <div class="kpi"><label>累计场次</label><div class="v" id="kSessions">0</div><span class="s">场</span></div>
+    <div class="kpi"><label>累计总次数</label><div class="v" id="kTotal">0</div><span class="s">次</span></div>
+  </section>
+
+  <!-- ================= 控制 ================= -->
+  <section class="controls">
+    <button id="btnToggle">▶ 开始统计</button>
+    <button id="btnArchive" class="warn">存档 + 复位</button>
+    <button id="btnDump" class="ghost">读取历史存档</button>
+    <div class="th-wrap">检测灵敏度
+      <input type="range" id="thSlider" min="0.10" max="1.50" step="0.05" value="0.35">
+      <b id="thVal">0.35 g</b>
+    </div>
+    <div class="sep"></div>
+    <button id="btnCsv" class="ghost sm">导出 CSV</button>
+  </section>
+
+  <!-- ================= 图表 ================= -->
+  <section class="charts">
+    <div class="card">
+      <h2>本场次累计曲线<span class="tag" id="lineTag">-- 实时 --</span></h2>
+      <canvas id="lineChart" class="chart"></canvas>
+    </div>
+    <div class="card">
+      <h2>场次对比<span class="tag" id="barTag">最近 16 场</span></h2>
+      <canvas id="barChart" class="chart"></canvas>
+    </div>
+  </section>
+
+  <!-- ================= 表格 ================= -->
+  <section class="card">
+    <h2>存档记录<span class="tag" id="tblTag">0 条</span></h2>
+    <div class="tbl-scroll">
+      <table>
+        <thead><tr>
+          <th>场次</th><th>存档时间</th><th>往复次数</th><th>时长</th><th>平均频率(次/分)</th>
+        </tr></thead>
+        <tbody id="tblBody"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <footer>
+    <b>操作说明</b>：正面 A 键 = 开始 / 停止统计 · 右侧 B 键<b>长按 1 秒</b> = 存档并复位 · 连接后自动同步设备时间并拉取历史存档<br>
+    Web Bluetooth 需要 Chrome / Edge（桌面端或 Android）。页面默认演示模式（模拟数据），连接真实设备后自动切换。
+  </footer>
+</div>
+
+<div id="toast"></div>
+
+<script>
+'use strict';
+/* ==================================================================
+ * 往复作战数据可视化 · Web Bluetooth 大屏
+ * 配套固件: StickS3_RecipCounter.ino (M5Stack StickS3)
+ * ================================================================== */
+
+/* ---------- BLE 定义 (与固件一致) ---------- */
+const SVC       = '7a5f1000-3c17-4a5e-b6a1-2d9c8e4f6a01';
+const CH_STATUS = '7a5f1001-3c17-4a5e-b6a1-2d9c8e4f6a01';
+const CH_CMD    = '7a5f1002-3c17-4a5e-b6a1-2d9c8e4f6a01';
+
+const $ = id => document.getElementById(id);
+const els = {
+  connDot:$('connDot'), connText:$('connText'), batText:$('batText'),
+  btnConn:$('btnConn'), btnDemo:$('btnDemo'), btnToggle:$('btnToggle'),
+  btnArchive:$('btnArchive'), btnDump:$('btnDump'), btnCsv:$('btnCsv'),
+  thSlider:$('thSlider'), thVal:$('thVal'),
+  kState:$('kState'), kStateSub:$('kStateSub'), kCnt:$('kCnt'), kDur:$('kDur'),
+  kRate:$('kRate'), kSessions:$('kSessions'), kTotal:$('kTotal'),
+  lineChart:$('lineChart'), barChart:$('barChart'), rateSpark:$('rateSpark'),
+  lineTag:$('lineTag'), barTag:$('barTag'), tblBody:$('tblBody'), tblTag:$('tblTag'),
+};
+
+/* ---------- 全局状态 ---------- */
+const S = {
+  st:-1,            // -1未连接 0空闲 1运行 2停止
+  cnt:0, ms:0, rate:0, th:0.35, bat:null,
+  series:[],        // 本场曲线 [{t(s),c,f}]
+  rateHist:[],      // 频率迷你图
+  sessions:[],      // 存档 [{i,cnt,ms,ts}]
+};
+let device=null, chStatus=null, chCmd=null, chBat=null;
+let rxBuf='', demoOn=false, demoTimer=null;
+
+/* ---------- 工具 ---------- */
+let toastTimer=null;
+function toast(msg, ms=2600){
+  const t=$('toast'); t.textContent=msg; t.classList.add('show');
+  clearTimeout(toastTimer); toastTimer=setTimeout(()=>t.classList.remove('show'), ms);
+}
+function fmtDur(ms){
+  const s=Math.floor(ms/1000);
+  const h=Math.floor(s/3600), m=Math.floor(s%3600/60), sec=s%60;
+  return h>0 ? `${h}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`
+             : `${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`;
+}
+function fmtTs(ts){
+  if(!ts) return '--';
+  return new Date(ts*1000).toLocaleString('zh-CN',{hour12:false});
+}
+
+/* ==================================================================
+ * Web Bluetooth
+ * ================================================================== */
+function setConn(mode, text){
+  els.connDot.className='dot' + (mode==='on'?' on':mode==='mid'?' mid':mode==='demo'?' demo':'');
+  els.connText.textContent=text;
+}
+function connected(){ return chStatus && device && device.gatt && device.gatt.connected; }
+
+async function connect(){
+  if(!navigator.bluetooth){ toast('当前浏览器不支持 Web Bluetooth，请使用 Chrome / Edge（桌面或安卓）', 4200); return; }
+  try{
+    setConn('mid','连接中…');
+    if(!device){
+      device = await navigator.bluetooth.requestDevice({
+        filters:[{services:[SVC]}],
+        optionalServices:['battery_service']
+      });
+      device.addEventListener('gattserverdisconnected', onDisconnect);
+    }
+    const server = await device.gatt.connect();
+    const svc = await server.getPrimaryService(SVC);
+    chStatus = await svc.getCharacteristic(CH_STATUS);
+    await chStatus.startNotifications();
+    chStatus.addEventListener('characteristicvaluechanged', onNotify);
+    chCmd = await svc.getCharacteristic(CH_CMD);
+    /* 标准电量服务(可选) */
+    try{
+      const bs = await server.getPrimaryService('battery_service');
+      chBat = await bs.getCharacteristic('battery_level');
+      await chBat.startNotifications();
+      chBat.addEventListener('characteristicvaluechanged', e=>setBat(e.target.value.getUint8(0)));
+      if(chBat.value) setBat(chBat.value.getUint8(0));
+    }catch(e){ chBat=null; }
+    stopDemo(true);
+    setConn('on','已连接 StickS3');
+    els.btnConn.textContent='断开连接';
+    toast('设备已连接，正在同步时间与历史存档…');
+    await sendCmd({cmd:'tsync', v:Math.floor(Date.now()/1000)});
+    await sendCmd({cmd:'dump'});
+  }catch(err){
+    console.warn(err);
+    setConn('off','未连接');
+    els.btnConn.textContent = device ? '重新连接' : '连接设备';
+    if(!('gatt' in (device||{}))) device=null;
+    toast('连接失败：' + (err.message||err), 3600);
+  }
+}
+
+function onDisconnect(){
+  chStatus=null; chCmd=null; chBat=null;
+  if(demoOn) return;
+  S.st=-1;
+  setConn('off','已断开');
+  els.btnConn.textContent='重新连接';
+  updateAll();
+  toast('设备已断开。点击"重新连接"可回连同一设备。');
+}
+
+async function disconnect(){
+  try{ if(device && device.gatt.connected) device.gatt.disconnect(); }catch(e){}
+}
+
+async function sendCmd(obj){
+  if(!connected() || !chCmd) return false;
+  try{
+    const data = new TextEncoder().encode(JSON.stringify(obj));
+    /* 必须按特征实际支持的属性选写入方式: 该特征若不支持
+       write-without-response, 调 writeValueWithoutResponse 会抛
+       NotSupportedError, 导致所有命令静默失败。 */
+    const p = chCmd.properties || {};
+    if(p.writeWithoutResponse)      await chCmd.writeValueWithoutResponse(data);
+    else if(p.write)                await chCmd.writeValue(data);
+    else throw new Error('CMD 特征不可写');
+    return true;
+  }catch(e){ console.warn('cmd fail', e); return false; }
+}
+
+/* ---------- 通知解析 (换行分隔 JSON) ---------- */
+function onNotify(e){
+  rxBuf += new TextDecoder().decode(e.target.value);
+  let idx;
+  while((idx = rxBuf.indexOf('\n')) >= 0){
+    const line = rxBuf.slice(0, idx).trim();
+    rxBuf = rxBuf.slice(idx+1);
+    if(!line) continue;
+    try{ dispatch(JSON.parse(line)); }catch(err){ console.warn('bad json', line); }
+  }
+  if(rxBuf.length > 1024) rxBuf='';
+}
+
+function dispatch(m){
+  switch(m.ev){
+    case 'st': {
+      const prev = S.st;
+      S.st = m.st; S.cnt = m.cnt; S.ms = m.ms; S.rate = m.f; S.th = m.th;
+      if(m.st===1 && prev!==1){ S.series=[]; S.rateHist=[]; }   // 新场次
+      if(m.st!==0){
+        S.series.push({t:m.ms/1000, c:m.cnt, f:m.f});
+        if(S.series.length>2000) S.series.shift();
+        S.rateHist.push({t:m.ms/1000, f:m.f});
+        if(S.rateHist.length>240) S.rateHist.shift();
+      }
+      break;
+    }
+    case 'arc': upsertArc(m); break;
+    case 'dumpend': toast(`历史读取完成，共 ${m.n} 条存档`); break;
+    case 'cfg': S.th=m.th; els.thSlider.value=m.th; els.thVal.textContent=m.th.toFixed(2)+' g'; break;
+    case 'ok': if(m.cmd==='ping') toast('设备在线'); break;
+  }
+  updateAll();
+}
+
+function upsertArc(m){
+  const rec = {i:m.i, cnt:m.cnt, ms:m.ms, ts:m.ts};
+  const at = S.sessions.findIndex(s=>s.i===m.i);
+  if(at>=0) S.sessions[at]=rec; else S.sessions.push(rec);
+  S.sessions.sort((a,b)=>a.i-b.i);
+  renderTable();
+}
+
+function setBat(v){
+  S.bat = (v===undefined||v>100) ? null : v;
+  els.batText.textContent = S.bat===null ? '--' : S.bat+'%';
+}
+
+/* ==================================================================
+ * 演示模式 (无设备时预览大屏效果)
+ * ================================================================== */
+function startDemo(){
+  demoOn=true;
+  S.bat=87; setBat(87);
+  const now=Math.floor(Date.now()/1000);
+  S.sessions=[];
+  for(let i=1;i<=10;i++){
+    const c=320+Math.floor(Math.random()*560);
+    const ms=(3+Math.random()*6)*60000|0;
+    S.sessions.push({i,cnt:c,ms,ts:now-i*3800});
+  }
+  S.st=1; S.cnt=0; S.ms=0; S.series=[]; S.rateHist=[];
+  demoTimer=setInterval(()=>{
+    S.ms+=200;
+    const p=Math.random();
+    if(p<0.72) S.cnt += (p<0.24?2:1);
+    S.rate = S.cnt*60000/Math.max(S.ms,1);
+    S.series.push({t:S.ms/1000, c:S.cnt, f:S.rate});
+    if(S.series.length>2000) S.series.shift();
+    S.rateHist.push({t:S.ms/1000, f:S.rate});
+    if(S.rateHist.length>240) S.rateHist.shift();
+    updateAll();
+  },200);
+  els.btnDemo.textContent='停止演示';
+  renderTable(); updateAll();
+}
+function stopDemo(silent){
+  if(!demoOn) return;
+  demoOn=false; clearInterval(demoTimer); demoTimer=null;
+  S.st=-1; S.cnt=0; S.ms=0; S.bat=null; setBat(null);
+  S.series=[]; S.rateHist=[]; S.sessions=[];
+  els.btnDemo.textContent='演示模式';
+  if(!silent) toast('演示模式已关闭，等待连接真实设备…');
+  renderTable(); updateAll();
+}
+
+/* ==================================================================
+ * 界面刷新
+ * ================================================================== */
+function updateAll(){
+  /* KPI */
+  const stMap = {0:['待机','st-idle','等待开始'],1:['统计中','st-run','A键停止 / B长按存档'],2:['已完成','st-stop','B长按存档并复位']};
+  const s = stMap[S.st] || ['待机','st-idle', demoOn?'模拟数据运行中':'未连接设备'];
+  els.kState.textContent=s[0];
+  els.kState.className='v '+s[1];
+  els.kStateSub.textContent=s[2];
+  els.kCnt.textContent=S.cnt;
+  els.kDur.textContent=fmtDur(S.ms);
+  els.kRate.textContent=S.rate.toFixed(1);
+  els.kSessions.textContent=S.sessions.length;
+  els.kTotal.textContent=S.sessions.reduce((a,b)=>a+b.cnt,0);
+  els.lineTag.textContent = S.st===1 ? '-- 实时 --' : (S.series.length? '本场已结束':'-- 等待数据 --');
+  els.barTag.textContent = S.sessions.length ? `共 ${S.sessions.length} 场 · 最近 16 场` : '暂无存档';
+
+  /* 控制按钮 */
+  const live = connected() || demoOn;
+  els.btnToggle.disabled = !live;
+  els.btnArchive.disabled = !live;
+  els.btnDump.disabled = !connected();
+  els.thSlider.disabled = !live;
+  els.btnToggle.textContent = S.st===1 ? '■ 停止统计' : '▶ 开始统计';
+
+  drawLine(); drawBar(); drawSpark();
+}
+
+function renderTable(){
+  const rows=[...S.sessions].reverse();
+  els.tblTag.textContent = S.sessions.length+' 条';
+  if(!rows.length){
+    els.tblBody.innerHTML='<tr class="empty-row"><td colspan="5">暂无存档 · 停止后长按 B 键 1 秒存档，或点击「读取历史存档」</td></tr>';
+    return;
+  }
+  els.tblBody.innerHTML = rows.map(r=>{
+    const rate = r.ms>0 ? (r.cnt*60000/r.ms).toFixed(1) : '--';
+    return `<tr><td>#${r.i}</td><td>${fmtTs(r.ts)}</td><td class="num">${r.cnt}</td><td>${fmtDur(r.ms)}</td><td>${rate}</td></tr>`;
+  }).join('');
+}
+
+/* ==================================================================
+ * Canvas 图表 (零依赖, DPR 自适应)
+ * ================================================================== */
+function fit(cv){
+  const r=cv.getBoundingClientRect(), dpr=window.devicePixelRatio||1;
+  cv.width=Math.max(10,Math.round(r.width*dpr));
+  cv.height=Math.max(10,Math.round(r.height*dpr));
+  cv._w=r.width; cv._h=r.height;
+  const ctx=cv.getContext('2d');
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  return ctx;
+}
+function placeholder(cv,ctx,msg){
+  ctx.clearRect(0,0,cv._w,cv._h);
+  ctx.fillStyle='#3f5877'; ctx.font='13px sans-serif';
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText(msg, cv._w/2, cv._h/2);
+}
+
+function drawLine(){
+  const cv=els.lineChart, ctx=fit(cv);
+  const W=cv._w,H=cv._h,P={l:56,r:56,t:22,b:30};
+  const iw=W-P.l-P.r, ih=H-P.t-P.b;
+  if(S.series.length<2){ placeholder(cv,ctx,'等待设备数据… 连接后自动绘制本场次累计曲线'); return; }
+  const d=S.series;
+  const xmax=Math.max(10,d[d.length-1].t);
+  const ymax=Math.max(10,d[d.length-1].c);
+  const rmax=Math.max(60, Math.max(...d.map(p=>p.f))*1.15);
+
+  ctx.clearRect(0,0,W,H);
+  ctx.font='11px Consolas,monospace';
+  /* 横向网格 + 左轴(次数) + 右轴(频率) */
+  for(let i=0;i<=4;i++){
+    const y=P.t+ih*i/4;
+    ctx.strokeStyle='rgba(34,211,238,.08)'; ctx.beginPath();
+    ctx.moveTo(P.l,y); ctx.lineTo(P.l+iw,y); ctx.stroke();
+    ctx.fillStyle='#57708c'; ctx.textAlign='right'; ctx.textBaseline='middle';
+    ctx.fillText(Math.round(ymax*(1-i/4)), P.l-8, y);
+    ctx.textAlign='left';
+    ctx.fillStyle='rgba(167,139,250,.75)';
+    ctx.fillText(Math.round(rmax*(1-i/4)), P.l+iw+8, y);
+  }
+  /* 纵向刻度 */
+  const step=Math.max(1,Math.round(xmax/7));
+  ctx.fillStyle='#57708c'; ctx.textAlign='center'; ctx.textBaseline='top';
+  for(let t=0;t<=xmax;t+=step){
+    const x=P.l+iw*t/xmax;
+    ctx.strokeStyle='rgba(34,211,238,.05)'; ctx.beginPath();
+    ctx.moveTo(x,P.t); ctx.lineTo(x,P.t+ih); ctx.stroke();
+    ctx.fillText(t+'s', x, P.t+ih+8);
+  }
+
+  const X=t=>P.l+iw*t/xmax, Y=c=>P.t+ih*(1-c/ymax), YF=f=>P.t+ih*(1-f/rmax);
+
+  /* 频率虚线 (右轴) */
+  ctx.setLineDash([5,4]); ctx.strokeStyle='rgba(167,139,250,.8)'; ctx.lineWidth=1.4;
+  ctx.beginPath(); d.forEach((p,i)=> i?ctx.lineTo(X(p.t),YF(p.f)):ctx.moveTo(X(p.t),YF(p.f))); ctx.stroke();
+  ctx.setLineDash([]);
+
+  /* 次数面积 */
+  const g=ctx.createLinearGradient(0,P.t,0,P.t+ih);
+  g.addColorStop(0,'rgba(34,211,238,.28)'); g.addColorStop(1,'rgba(34,211,238,0)');
+  ctx.beginPath(); ctx.moveTo(X(d[0].t),P.t+ih);
+  d.forEach(p=>ctx.lineTo(X(p.t),Y(p.c)));
+  ctx.lineTo(X(d[d.length-1].t),P.t+ih); ctx.closePath();
+  ctx.fillStyle=g; ctx.fill();
+
+  /* 次数主线 */
+  ctx.strokeStyle='#22d3ee'; ctx.lineWidth=2.2;
+  ctx.shadowColor='rgba(34,211,238,.55)'; ctx.shadowBlur=8;
+  ctx.beginPath(); d.forEach((p,i)=> i?ctx.lineTo(X(p.t),Y(p.c)):ctx.moveTo(X(p.t),Y(p.c)));
+  ctx.stroke(); ctx.shadowBlur=0;
+
+  /* 端点 */
+  const last=d[d.length-1];
+  ctx.fillStyle='#22d3ee'; ctx.beginPath();
+  ctx.arc(X(last.t),Y(last.c),4,0,7); ctx.fill();
+
+  /* 图例 */
+  ctx.textAlign='right'; ctx.textBaseline='top'; ctx.font='11px sans-serif';
+  ctx.fillStyle='#22d3ee'; ctx.fillText('— 往复次数', W-14, P.t+2);
+  ctx.fillStyle='rgba(167,139,250,.85)'; ctx.fillText('--- 频率 (次/分)', W-14, P.t+18);
+}
+
+function drawBar(){
+  const cv=els.barChart, ctx=fit(cv);
+  const W=cv._w,H=cv._h,P={l:44,r:14,t:26,b:34};
+  const iw=W-P.l-P.r, ih=H-P.t-P.b;
+  const ss=S.sessions.slice(-16);
+  if(!ss.length){ placeholder(cv,ctx,'暂无存档 · 停止统计后长按 B 键 1 秒即可存档'); return; }
+  ctx.clearRect(0,0,W,H);
+  const max=Math.max(10,...ss.map(s=>s.cnt));
+
+  /* 网格 */
+  ctx.font='10px Consolas,monospace';
+  for(let i=0;i<=4;i++){
+    const y=P.t+ih*i/4;
+    ctx.strokeStyle='rgba(34,211,238,.07)';
+    ctx.beginPath(); ctx.moveTo(P.l,y); ctx.lineTo(P.l+iw,y); ctx.stroke();
+    ctx.fillStyle='#57708c'; ctx.textAlign='right'; ctx.textBaseline='middle';
+    ctx.fillText(Math.round(max*(1-i/4)), P.l-6, y);
+  }
+
+  const slot=iw/ss.length, bw=Math.min(46,slot*0.62);
+  const g=ctx.createLinearGradient(0,P.t,0,P.t+ih);
+  g.addColorStop(0,'#22d3ee'); g.addColorStop(1,'#3b82f6');
+
+  ss.forEach((s,i)=>{
+    const bh=ih*s.cnt/max;
+    const x=P.l+slot*i+(slot-bw)/2, y=P.t+ih-bh;
+    ctx.fillStyle=g;
+    ctx.beginPath();
+    const rr=Math.min(5,bw/2);
+    ctx.moveTo(x,y+bh); ctx.lineTo(x,y+rr);
+    ctx.quadraticCurveTo(x,y,x+rr,y);
+    ctx.lineTo(x+bw-rr,y); ctx.quadraticCurveTo(x+bw,y,x+bw,y+rr);
+    ctx.lineTo(x+bw,y+bh); ctx.closePath(); ctx.fill();
+    /* 顶部数值 */
+    ctx.fillStyle='#cfe9ff'; ctx.textAlign='center'; ctx.textBaseline='bottom';
+    ctx.font='bold 11px sans-serif';
+    ctx.fillText(s.cnt, x+bw/2, y-3);
+    /* 底部场次号 */
+    ctx.fillStyle='#57708c'; ctx.textBaseline='top'; ctx.font='10px sans-serif';
+    ctx.fillText('#'+s.i, x+bw/2, P.t+ih+6);
+  });
+
+  ctx.fillStyle='#57708c'; ctx.textAlign='right'; ctx.textBaseline='bottom';
+  ctx.font='10px sans-serif';
+  ctx.fillText('柱=往复次数', W-10, H-6);
+}
+
+function drawSpark(){
+  const cv=els.rateSpark, ctx=fit(cv);
+  const W=cv._w,H=cv._h;
+  ctx.clearRect(0,0,W,H);
+  const d=S.rateHist.slice(-120);
+  ctx.strokeStyle='rgba(34,211,238,.12)';
+  ctx.strokeRect(0.5,0.5,W-1,H-1);
+  if(d.length<2) return;
+  const fmax=Math.max(...d.map(p=>p.f),1);
+  ctx.beginPath();
+  d.forEach((p,i)=>{
+    const x=W*i/(d.length-1), y=H-2-(H-6)*p.f/fmax;
+    i?ctx.lineTo(x,y):ctx.moveTo(x,y);
+  });
+  ctx.strokeStyle='#22d3ee'; ctx.lineWidth=1.5; ctx.stroke();
+  ctx.lineTo(W,H); ctx.lineTo(0,H); ctx.closePath();
+  const g=ctx.createLinearGradient(0,0,0,H);
+  g.addColorStop(0,'rgba(34,211,238,.25)'); g.addColorStop(1,'rgba(34,211,238,0)');
+  ctx.fillStyle=g; ctx.fill();
+}
+
+/* ==================================================================
+ * 事件绑定
+ * ================================================================== */
+els.btnConn.addEventListener('click', ()=> connected() ? disconnect() : connect());
+els.btnDemo.addEventListener('click', ()=> demoOn ? stopDemo() : startDemo());
+
+els.btnToggle.addEventListener('click', async ()=>{
+  if(demoOn){ /* 演示模式下本地模拟 */
+    if(S.st===1){ S.st=2; clearInterval(demoTimer); demoTimer=null; toast('演示：已停止'); }
+    else startDemo();
+    updateAll(); return;
+  }
+  if(S.st===1){ if(await sendCmd({cmd:'stop'})) toast('已发送停止命令'); }
+  else { if(await sendCmd({cmd:'start'})) toast('已发送开始命令'); }
+});
+
+els.btnArchive.addEventListener('click', async ()=>{
+  if(demoOn){
+    if(S.cnt>0){
+      S.sessions.push({i:S.sessions.length+1, cnt:S.cnt, ms:S.ms, ts:Math.floor(Date.now()/1000)});
+      renderTable();
+    }
+    S.st=0; S.cnt=0; S.ms=0; S.series=[]; S.rateHist=[];
+    toast('演示：已存档并复位'); updateAll(); return;
+  }
+  if(await sendCmd({cmd:'archive'})) toast('已发送存档复位命令');
+});
+
+els.btnDump.addEventListener('click', async ()=>{
+  if(await sendCmd({cmd:'dump'})) toast('正在读取历史存档…');
+});
+
+els.thSlider.addEventListener('input', ()=> els.thVal.textContent=(+els.thSlider.value).toFixed(2)+' g');
+els.thSlider.addEventListener('change', async ()=>{
+  const v=+els.thSlider.value;
+  if(connected()){ await sendCmd({cmd:'th', v}); toast(`灵敏度已下发：${v.toFixed(2)} g（已存入设备）`); }
+});
+
+els.btnCsv.addEventListener('click', ()=>{
+  if(!S.sessions.length){ toast('暂无存档数据可导出'); return; }
+  const rows=[['场次','存档时间','往复次数','时长(秒)','平均频率(次/分)']];
+  S.sessions.forEach(r=>rows.push([
+    r.i, r.ts?new Date(r.ts*1000).toLocaleString('zh-CN',{hour12:false}):'--',
+    r.cnt, (r.ms/1000).toFixed(1), r.ms>0?(r.cnt*60000/r.ms).toFixed(2):'--'
+  ]));
+  const csv='\ufeff'+rows.map(r=>r.join(',')).join('\n');
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'}));
+  a.download='往复作战数据_'+new Date().toISOString().slice(0,10)+'.csv';
+  a.click(); URL.revokeObjectURL(a.href);
+  toast('CSV 已导出');
+});
+
+window.addEventListener('resize', updateAll);
+
+/* ---------- 启动: 默认进入演示模式, 方便预览大屏 ---------- */
+startDemo();
+</script>
+</body>
+</html>
